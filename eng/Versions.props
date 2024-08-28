@@ -30,6 +30,7 @@
     <!-- Packages from dotnet/runtime -->
     <MicrosoftBclTimeProviderVersion>9.0.0-rc.1.24419.2</MicrosoftBclTimeProviderVersion>
     <MicrosoftExtensionsCachingAbstractionsVersion>9.0.0-rc.1.24419.2</MicrosoftExtensionsCachingAbstractionsVersion>
+    <MicrosoftExtensionsCachingMemoryVersion>9.0.0-rc.1.24419.2</MicrosoftExtensionsCachingMemoryVersion>
     <MicrosoftExtensionsConfigurationAbstractionsVersion>9.0.0-rc.1.24419.2</MicrosoftExtensionsConfigurationAbstractionsVersion>
     <MicrosoftExtensionsConfigurationBinderVersion>9.0.0-rc.1.24419.2</MicrosoftExtensionsConfigurationBinderVersion>
     <MicrosoftExtensionsConfigurationJsonVersion>9.0.0-rc.1.24419.2</MicrosoftExtensionsConfigurationJsonVersion>
@@ -64,6 +65,7 @@
     <MicrosoftAspNetCoreAppRuntimewinx64Version>9.0.0-rc.2.24426.2</MicrosoftAspNetCoreAppRuntimewinx64Version>
     <MicrosoftAspNetCoreMvcTestingVersion>9.0.0-rc.2.24426.2</MicrosoftAspNetCoreMvcTestingVersion>
     <MicrosoftAspNetCoreTestHostVersion>9.0.0-rc.2.24426.2</MicrosoftAspNetCoreTestHostVersion>
+    <MicrosoftExtensionsCachingSqlServerVersion>9.0.0-rc.2.24426.2</MicrosoftExtensionsCachingSqlServerVersion>
     <MicrosoftExtensionsCachingStackExchangeRedisVersion>9.0.0-rc.2.24426.2</MicrosoftExtensionsCachingStackExchangeRedisVersion>
     <MicrosoftExtensionsDiagnosticsHealthChecksVersion>9.0.0-rc.2.24426.2</MicrosoftExtensionsDiagnosticsHealthChecksVersion>
     <MicrosoftExtensionsHttpPollyVersion>9.0.0-rc.2.24426.2</MicrosoftExtensionsHttpPollyVersion>
