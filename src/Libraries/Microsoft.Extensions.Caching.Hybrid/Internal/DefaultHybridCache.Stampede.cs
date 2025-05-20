@@ -58,7 +58,7 @@ internal partial class DefaultHybridCache
             // and for *them* to have updated needs local-cache-write, but since the shared us/them key includes flags,
             // we can skip this if *either* flag is set).
             if ((flags & HybridCacheEntryFlags.DisableLocalCache) == 0
-                && TryGetExisting<T>(key, out CacheItem<T>? typed)
+                && TryGetExisting<T>(key.AsSpan(), ref key!, out CacheItem<T>? typed)
                 && typed.TryReserve())
             {
                 stampedeState.SetResultDirect(typed);

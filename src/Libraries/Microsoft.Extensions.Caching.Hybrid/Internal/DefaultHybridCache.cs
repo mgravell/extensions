@@ -52,6 +52,7 @@ internal sealed partial class DefaultHybridCache : HybridCache
         None = 0,
         BackendCache = 1 << 0,
         BackendBuffers = 1 << 1,
+        LocalKnownMemoryCache = 1 << 2,
     }
 
     internal CacheFeatures GetFeatures() => _features;
@@ -63,6 +64,8 @@ internal sealed partial class DefaultHybridCache : HybridCache
     private CacheFeatures GetFeatures(CacheFeatures mask) => _features & mask;
 
     internal bool HasBackendCache => (_features & CacheFeatures.BackendCache) != 0;
+
+    internal bool HasLocalKnownMemoryCache => (_features & CacheFeatures.LocalKnownMemoryCache) != 0;
 
     public DefaultHybridCache(IOptions<HybridCacheOptions> options, IServiceProvider services)
     {
@@ -116,6 +119,11 @@ internal sealed partial class DefaultHybridCache : HybridCache
         _tagInvalidationTimesUseAltLookup = _tagInvalidationTimes.TryGetAlternateLookup(out _tagInvalidationTimesBySpan);
 #endif
 
+        if (_localCache is MemoryCache) // check for *concrete* MemoryCache, which exposes additional APIs
+        {
+            _features |= CacheFeatures.LocalKnownMemoryCache;
+        }
+
         // do this last
         _globalInvalidateTimestamp = _backendCache is null ? _zeroTimestamp : SafeReadTagInvalidationAsync(TagSet.WildcardTag);
     }
@@ -127,71 +135,17 @@ internal sealed partial class DefaultHybridCache : HybridCache
 
     public override ValueTask<T> GetOrCreateAsync<TState, T>(string key, TState state, Func<TState, CancellationToken, ValueTask<T>> underlyingDataCallback,
         HybridCacheEntryOptions? options = null, IEnumerable<string>? tags = null, CancellationToken cancellationToken = default)
-    {
-        bool canBeCanceled = cancellationToken.CanBeCanceled;
-        if (canBeCanceled)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-        }
+        => GetOrCreateImplAsync<TState, T>(key.AsSpan(), key, state, underlyingDataCallback, options, tags, cancellationToken);
 
-        HybridCacheEntryFlags flags = GetEffectiveFlags(options);
-        if (!ValidateKey(key))
-        {
-            // we can't use cache, but we can still provide the data
-            return RunWithoutCacheAsync(flags, state, underlyingDataCallback, cancellationToken);
-        }
-
-        bool eventSourceEnabled = HybridCacheEventSource.Log.IsEnabled();
-
-        if ((flags & HybridCacheEntryFlags.DisableLocalCacheRead) == 0)
-        {
-            if (TryGetExisting<T>(key, out CacheItem<T>? typed)
-                && typed.TryGetValue(_logger, out T? value))
-            {
-                // short-circuit
-                if (eventSourceEnabled)
-                {
-                    HybridCacheEventSource.Log.LocalCacheHit();
-                }
-
-                return new(value);
-            }
-            else
-            {
-                if (eventSourceEnabled)
-                {
-                    HybridCacheEventSource.Log.LocalCacheMiss();
-                }
-            }
-        }
-
-        if (GetOrCreateStampedeState<TState, T>(key, flags, out StampedeState<TState, T>? stampede, canBeCanceled, tags))
-        {
-            // new query; we're responsible for making it happen
-            if (canBeCanceled)
-            {
-                // *we* might cancel, but someone else might be depending on the result; start the
-                // work independently, then we'll with join the outcome
-                stampede.QueueUserWorkItem(in state, underlyingDataCallback, options);
-            }
-            else
-            {
-                // we're going to run to completion; no need to get complicated
-                _ = stampede.ExecuteDirectAsync(in state, underlyingDataCallback, options); // this larger task includes L2 write etc
-                return stampede.UnwrapReservedAsync(_logger);
-            }
-        }
-        else
-        {
-            // pre-existing query
-            if (eventSourceEnabled)
-            {
-                HybridCacheEventSource.Log.StampedeJoin();
-            }
-        }
-
-        return stampede.JoinAsync(_logger, cancellationToken);
-    }
+    // TODO: override
+    public /* override */ ValueTask<T> GetOrCreateAsync<TState, T>(
+        ReadOnlySpan<char> key,
+        TState state,
+        Func<TState, CancellationToken, ValueTask<T>> underlyingDataCallback,
+        HybridCacheEntryOptions? options = null,
+        IEnumerable<string>? tags = null,
+        CancellationToken cancellationToken = default)
+        => GetOrCreateImplAsync<TState, T>(key, null, state, underlyingDataCallback, options, tags, cancellationToken);
 
     public override ValueTask RemoveAsync(string key, CancellationToken token = default)
     {
@@ -272,9 +226,80 @@ internal sealed partial class DefaultHybridCache : HybridCache
 #endif
     }
 
-    private bool ValidateKey(string key)
+    private ValueTask<T> GetOrCreateImplAsync<TState, T>(ReadOnlySpan<char> keySpan, string? keyString, TState state, Func<TState, CancellationToken, ValueTask<T>> underlyingDataCallback,
+    HybridCacheEntryOptions? options, IEnumerable<string>? tags, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(key))
+        bool canBeCanceled = cancellationToken.CanBeCanceled;
+        if (canBeCanceled)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        HybridCacheEntryFlags flags = GetEffectiveFlags(options);
+        if (!ValidateKey(keySpan))
+        {
+            // we can't use cache, but we can still provide the data
+            return RunWithoutCacheAsync(flags, state, underlyingDataCallback, cancellationToken);
+        }
+
+        bool eventSourceEnabled = HybridCacheEventSource.Log.IsEnabled();
+
+        if ((flags & HybridCacheEntryFlags.DisableLocalCacheRead) == 0)
+        {
+            if (TryGetExisting<T>(keySpan, ref keyString, out CacheItem<T>? typed)
+                && typed.TryGetValue(_logger, out T? value))
+            {
+                // short-circuit
+                if (eventSourceEnabled)
+                {
+                    HybridCacheEventSource.Log.LocalCacheHit();
+                }
+
+                return new(value);
+            }
+            else
+            {
+                if (eventSourceEnabled)
+                {
+                    HybridCacheEventSource.Log.LocalCacheMiss();
+                }
+            }
+        }
+
+        keyString ??= keySpan.ToString();
+        if (GetOrCreateStampedeState<TState, T>(keyString, flags, out StampedeState<TState, T>? stampede, canBeCanceled, tags))
+        {
+            // new query; we're responsible for making it happen
+            if (canBeCanceled)
+            {
+                // *we* might cancel, but someone else might be depending on the result; start the
+                // work independently, then we'll with join the outcome
+                stampede.QueueUserWorkItem(in state, underlyingDataCallback, options);
+            }
+            else
+            {
+                // we're going to run to completion; no need to get complicated
+                _ = stampede.ExecuteDirectAsync(in state, underlyingDataCallback, options); // this larger task includes L2 write etc
+                return stampede.UnwrapReservedAsync(_logger);
+            }
+        }
+        else
+        {
+            // pre-existing query
+            if (eventSourceEnabled)
+            {
+                HybridCacheEventSource.Log.StampedeJoin();
+            }
+        }
+
+        return stampede.JoinAsync(_logger, cancellationToken);
+    }
+
+    private bool ValidateKey(ReadOnlySpan<char> key)
+    {
+        // note that null strings, via AsSpan(), become an empty span, so
+        // we only need consider empty / whitespace
+        if (IsEmptyOrWhiteSpace(key))
         {
             _logger.KeyEmptyOrWhitespace();
             return false;
@@ -286,7 +311,7 @@ internal sealed partial class DefaultHybridCache : HybridCache
             return false;
         }
 
-        if (ContainsReservedCharacters(key.AsSpan()))
+        if (ContainsReservedCharacters(key))
         {
             _logger.KeyInvalidContent();
             return false;
@@ -294,22 +319,67 @@ internal sealed partial class DefaultHybridCache : HybridCache
 
         // nothing to complain about
         return true;
+
+        // derived from https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/libraries/System.Private.CoreLib/src/System/String.cs#L504C9-L514C10
+        static bool IsEmptyOrWhiteSpace(ReadOnlySpan<char> value)
+        {
+            foreach (char c in value)
+            {
+                if (!char.IsWhiteSpace(c))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
     }
 
-    private bool TryGetExisting<T>(string key, [NotNullWhen(true)] out CacheItem<T>? value)
+    private bool TryGetExisting<T>(ReadOnlySpan<char> keySpan, ref string? keyString, [NotNullWhen(true)] out CacheItem<T>? value)
     {
-        if (_localCache.TryGetValue(key, out object? untyped) && untyped is CacheItem<T> typed)
+#pragma warning disable IDE0018 // can be inlined; no it can't, becase of #if
+        object? untyped;
+#pragma warning restore IDE0018 // can be inlined; no it can't, becase of #if
+
+#if NET10_0_OR_GREATER
+        // note already type-tested
+        if (HasLocalKnownMemoryCache)
+        {
+            var mc = Unsafe.As<MemoryCache>(_localCache);
+            if (mc.TryGetValue(keySpan, out untyped) && (value = untyped as CacheItem<T>) is not null)
+            {
+                // check tag-based and global invalidation
+                if (IsValid(value))
+                {
+                    return true;
+                }
+
+                // remove from L1; note there's a little unavoidable race here; worst case is that
+                // a fresher value gets dropped - we'll have to accept it
+                keyString ??= keySpan.ToString();
+                _localCache.Remove(keyString);
+            }
+
+            // failure
+            value = null;
+            return false;
+        }
+#endif
+
+        // without that feature, we'll need a string for the lookup, so: make sure we have one
+        keyString ??= keySpan.ToString();
+
+        if (_localCache.TryGetValue(keyString, out untyped) && (value = untyped as CacheItem<T>) is not null)
         {
             // check tag-based and global invalidation
-            if (IsValid(typed))
+            if (IsValid(value))
             {
-                value = typed;
                 return true;
             }
 
             // remove from L1; note there's a little unavoidable race here; worst case is that
             // a fresher value gets dropped - we'll have to accept it
-            _localCache.Remove(key);
+            _localCache.Remove(keyString);
         }
 
         // failure
